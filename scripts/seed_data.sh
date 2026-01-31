@@ -3,88 +3,87 @@ set -euo pipefail
 
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 ENDPOINT="${ENDPOINT_URL:-http://localhost:4566}"
-
-# Helpers
-inv_urgency () {
-  python - <<'PY'
-u=int(__import__("os").environ["U"])
-print(f"{9999-u:04d}")
-PY
-}
-
-put_access () {
-  local user="$1" study="$2" role="$3"
-  aws dynamodb put-item \
-    --table-name Access \
-    --endpoint-url "$ENDPOINT" \
-    --region "$REGION" \
-    --item "{
-      \"pk\": {\"S\": \"U#${user}\"},
-      \"sk\": {\"S\": \"S#${study}#R#${role}\"}
-    }" >/dev/null
-}
-
-put_item_and_index () {
-  local item_id="$1" type="$2" study="$3" urgency="$4" day="$5" bucket="$6"
-
-  local updated_at
-  updated_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-  # Items (fonte)
-  aws dynamodb put-item \
-    --table-name Items \
-    --endpoint-url "$ENDPOINT" \
-    --region "$REGION" \
-    --item "{
-      \"pk\": {\"S\": \"ITEM#${item_id}\"},
-      \"sk\": {\"S\": \"META#${type}\"},
-      \"item_id\": {\"S\": \"${item_id}\"},
-      \"type\": {\"S\": \"${type}\"},
-      \"study_id\": {\"S\": \"${study}\"},
-      \"urgency\": {\"N\": \"${urgency}\"},
-      \"updated_at\": {\"S\": \"${updated_at}\"},
-      \"status\": {\"S\": \"OPEN\"},
-      \"title\": {\"S\": \"${type} - ${item_id}\"}
-    }" >/dev/null
-
-  # UrgencyIndex (view para ordenar)
-  export U="${urgency}"
-  local inv
-  inv="$(inv_urgency)"
-
-  aws dynamodb put-item \
-    --table-name UrgencyIndex \
-    --endpoint-url "$ENDPOINT" \
-    --region "$REGION" \
-    --item "{
-      \"pk\": {\"S\": \"S#${study}#T#${type}#D#${day}#B#${bucket}\"},
-      \"sk\": {\"S\": \"U#${inv}#TS#${updated_at}#I#${item_id}\"},
-      \"study_id\": {\"S\": \"${study}\"},
-      \"type\": {\"S\": \"${type}\"},
-      \"day\": {\"S\": \"${day}\"},
-      \"bucket\": {\"N\": \"${bucket}\"},
-      \"urgency\": {\"N\": \"${urgency}\"},
-      \"item_id\": {\"S\": \"${item_id}\"}
-    }" >/dev/null
-}
-
-echo "Seeding RBAC..."
-put_access "u1" "studyA" "REVIEWER"
-put_access "u1" "studyB" "REVIEWER"
-put_access "u2" "studyB" "REVIEWER"   # u2 não tem studyA
-
 DAY="$(date -u +"%Y%m%d")"
 
-echo "Seeding items + index (DAY=$DAY)..."
-# 2 tipos, 2 studies, buckets 0..3 (simples)
+put_item () {
+  aws dynamodb put-item \
+    --table-name "$1" \
+    --endpoint-url "$ENDPOINT" \
+    --region "$REGION" \
+    --item "$2" >/dev/null
+}
+
+echo "Seeding RBAC (Access)..."
+put_item "Access" "{\"pk\":{\"S\":\"U#u1\"},\"sk\":{\"S\":\"S#studyA#R#REVIEWER\"}}"
+put_item "Access" "{\"pk\":{\"S\":\"U#u1\"},\"sk\":{\"S\":\"S#studyB#R#REVIEWER\"}}"
+put_item "Access" "{\"pk\":{\"S\":\"U#u2\"},\"sk\":{\"S\":\"S#studyB#R#REVIEWER\"}}"
+
+echo "Seeding items + urgency index (DAY=$DAY)..."
+# buckets 0..3 (pra ficar simples no começo)
 for i in $(seq 1 10); do
-  put_item_and_index "A-Q${i}" "DataQuery" "studyA" $((RANDOM % 100)) "$DAY" $((i % 4))
-  put_item_and_index "A-S${i}" "SafetyEvent" "studyA" $((RANDOM % 100)) "$DAY" $(((i+1) % 4))
+  u=$((RANDOM % 100))
+  b=$((i % 4))
+  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  inv=$(python -c "print(f'{9999-$u:04d}')")
+
+  put_item "Items" "{
+    \"pk\": {\"S\": \"ITEM#B-Q${i}\"},
+    \"sk\": {\"S\": \"META#DataQuery\"},
+    \"item_id\": {\"S\": \"B-Q${i}\"},
+    \"type\": {\"S\": \"DataQuery\"},
+    \"study_id\": {\"S\": \"studyB\"},
+    \"urgency\": {\"N\": \"${u}\"},
+    \"day\": {\"S\": \"${DAY}\"},
+    \"bucket\": {\"N\": \"${b}\"},
+    \"updated_at\": {\"S\": \"${ts}\"},
+    \"status\": {\"S\": \"OPEN\"},
+    \"title\": {\"S\": \"DataQuery - B-Q${i}\"},
+    \"version\": {\"N\": \"1\"}
+  }"
+
+  put_item "UrgencyIndex" "{
+    \"pk\": {\"S\": \"S#studyB#T#DataQuery#D#${DAY}#B#${b}\"},
+    \"sk\": {\"S\": \"U#${inv}#TS#${ts}#I#B-Q${i}\"},
+    \"study_id\": {\"S\": \"studyB\"},
+    \"type\": {\"S\": \"DataQuery\"},
+    \"day\": {\"S\": \"${DAY}\"},
+    \"bucket\": {\"N\": \"${b}\"},
+    \"urgency\": {\"N\": \"${u}\"},
+    \"item_id\": {\"S\": \"B-Q${i}\"}
+  }"
 done
 
 for i in $(seq 1 10); do
-  put_item_and_index "B-Q${i}" "DataQuery" "studyB" $((RANDOM % 100)) "$DAY" $((i % 4))
-  put_item_and_index "B-S${i}" "SafetyEvent" "studyB" $((RANDOM % 100)) "$DAY" $(((i+1) % 4))
+  u=$((RANDOM % 100))
+  b=$(((i+1) % 4))
+  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  inv=$(python -c "print(f'{9999-$u:04d}')")
+
+  put_item "Items" "{
+    \"pk\": {\"S\": \"ITEM#B-S${i}\"},
+    \"sk\": {\"S\": \"META#SafetyEvent\"},
+    \"item_id\": {\"S\": \"B-S${i}\"},
+    \"type\": {\"S\": \"SafetyEvent\"},
+    \"study_id\": {\"S\": \"studyB\"},
+    \"urgency\": {\"N\": \"${u}\"},
+    \"day\": {\"S\": \"${DAY}\"},
+    \"bucket\": {\"N\": \"${b}\"},
+    \"updated_at\": {\"S\": \"${ts}\"},
+    \"status\": {\"S\": \"OPEN\"},
+    \"title\": {\"S\": \"SafetyEvent - B-S${i}\"},
+    \"version\": {\"N\": \"1\"}
+  }"
+
+  put_item "UrgencyIndex" "{
+    \"pk\": {\"S\": \"S#studyB#T#SafetyEvent#D#${DAY}#B#${b}\"},
+    \"sk\": {\"S\": \"U#${inv}#TS#${ts}#I#B-S${i}\"},
+    \"study_id\": {\"S\": \"studyB\"},
+    \"type\": {\"S\": \"SafetyEvent\"},
+    \"day\": {\"S\": \"${DAY}\"},
+    \"bucket\": {\"N\": \"${b}\"},
+    \"urgency\": {\"N\": \"${u}\"},
+    \"item_id\": {\"S\": \"B-S${i}\"}
+  }"
 done
 
 echo "Done."

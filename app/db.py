@@ -1,7 +1,7 @@
 import os
 import boto3
 
-def dynamo():
+def dynamo_resource():
     return boto3.resource(
         "dynamodb",
         region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),

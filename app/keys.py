@@ -1,17 +1,19 @@
 import hashlib
 from datetime import datetime, timezone
 
-BUCKETS = 20  # depois você ajusta
+DEFAULT_BUCKETS = 4  # comece igual ao seed; depois suba p/ 20+
 
 def today_yyyymmdd() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d")
 
-def bucket_for(item_id: str, buckets: int = BUCKETS) -> int:
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def bucket_for(item_id: str, buckets: int = DEFAULT_BUCKETS) -> int:
     h = hashlib.md5(item_id.encode("utf-8")).hexdigest()
     return int(h[:8], 16) % buckets
 
 def inv_urgency(urgency: int) -> str:
-    # Dynamo ordena asc; queremos desc -> invertido e zero-pad
     return f"{9999 - int(urgency):04d}"
 
 def items_pk(item_id: str) -> str:
@@ -28,6 +30,3 @@ def urgency_sk(urgency: int, updated_at: str, item_id: str) -> str:
 
 def access_pk(user_id: str) -> str:
     return f"U#{user_id}"
-
-def access_sk(study_id: str, role: str) -> str:
-    return f"S#{study_id}#R#{role}"
